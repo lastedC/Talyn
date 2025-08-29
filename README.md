@@ -54,7 +54,7 @@ npm run dev
 ```
 
 - Backend: http://localhost:5000
-- Frontend: http://localhost:5173
+- Frontend: http://localhost:5050
 
 ## Roadmap
 - [ ] Compare resume against a job description
