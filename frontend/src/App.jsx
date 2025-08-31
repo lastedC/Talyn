@@ -20,6 +20,8 @@ function App() {
           <p>Word count: {result.analysis.wordCount}</p>
           <p>Hard skills: {result.analysis.hardSkills.join(", ")}</p>
           <p>Soft skills: {result.analysis.softSkills.join(", ")}</p>
+          <p>Hard Skills (AI): {result.analysis.aiRaw.hardSkills}</p>
+          <p>Soft Skills (AI): {result.analysis.aiRaw.softSkills}</p>
         </div>
       ) : result?.message ? (
         <div style={{ color: "red" }}>Error: {result.message}</div>

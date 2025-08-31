@@ -1,3 +1,4 @@
+const ollama = require("ollama");
 const pdfParse = require("pdf-parse");
 const fs = require("fs");
 const natural = require("natural");
@@ -38,10 +39,43 @@ exports.parseResume = async (req, res) => {
       return regex.test(normalizedText);
     });
 
+    const ollamaResponse = await ollama.default.generate({
+      model: "llama3.1",
+      prompt: `You are a resume analyzer. Extract skills clearly into JSON.
+
+      Here is a resume text:
+      ${text}
+
+      Return JSON in this format:
+      {
+        "hardSkills": [...],
+        "softSkills": [...]
+      }`,
+    });
+
+    let aiSkills = { hardSkills: [], softSkills: [] };
+    try {
+      const jsonMatch = ollamaResponse.response.match(/```json([\s\S]*?)```/);
+      if (jsonMatch) {
+        aiSkills = JSON.parse(jsonMatch[1].trim());
+      } else {
+        aiSkills = JSON.parse(ollamaResponse.response);
+      }
+    } catch (e) {
+      console.warn(
+        "Ollama response not valid JSON, falling back:",
+        ollamaResponse.response
+      );
+    }
+
     const analysis = {
       wordCount: cleanTokens.length,
       hardSkills: foundHardSkills,
       softSkills: foundSoftSkills,
+      aiRaw: {
+        hardSkills: aiSkills.hardSkills.join(", "),
+        softSkills: aiSkills.softSkills.join(", "),
+      },
     };
 
     res.json({ success: true, analysis });

@@ -16,7 +16,7 @@ Built with **Node.js + Express (backend)** and **React + Vite (frontend)**.
 
 ## Tech Stack
 - **Frontend**: React, Vite, Chart.js  
-- **Backend**: Node.js, Express, Multer, pdf-parse, mammoth, natural  
+- **Backend**: Node.js, Express, Multer, pdf-parse, mammoth, natural, ollama
 - **Dev Tools**: Nodemon, Concurrently  
 - **Deployment**: (Planned) Netlify + Render/Heroku  
 
@@ -55,6 +55,7 @@ npm run dev
 
 - Backend: http://localhost:5000
 - Frontend: http://localhost:5050
+- Ollama API: http://127.0.0.1:11434 (ensure `ollama serve` is running)
 
 ## Roadmap
 - [ ] Compare resume against a job description
