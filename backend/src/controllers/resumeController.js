@@ -2,6 +2,26 @@ const ollama = require("ollama");
 const pdfParse = require("pdf-parse");
 const fs = require("fs");
 const natural = require("natural");
+const mammoth = require("mammoth");
+
+function extractJson(text) {
+  try {
+    const match = text.match(/```json([\s\S]*?)```/i);
+    if (match) {
+      return JSON.parse(match[1].trim());
+    }
+
+    const braceMatch = text.match(/\{[\s\S]*\}/);
+    if (braceMatch) {
+      return JSON.parse(braceMatch[0]);
+    }
+
+    throw new Error("No JSON found in Ollama response");
+  } catch (err) {
+    console.warn("Failed to parse Ollama JSON:", err.message);
+    return { hardSkills: [], softSkills: [] };
+  }
+}
 
 exports.parseResume = async (req, res) => {
   try {
@@ -13,8 +33,26 @@ exports.parseResume = async (req, res) => {
 
     const filePath = req.file.path;
     const dataBuffer = fs.readFileSync(filePath);
-    const pdfData = await pdfParse(dataBuffer);
-    const text = pdfData.text;
+    let text = "";
+    let pageCount = 1;
+    if (req.file.mimetype === "application/pdf") {
+      const pdfData = await pdfParse(dataBuffer);
+      text = pdfData.text;
+      pageCount = pdfData.numpages || 1;
+    } else if (
+      req.file.mimetype ===
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    ) {
+      const result = await mammoth.extractRawText({ path: filePath });
+      text = result.value;
+      const words = text.split(/\s+/).filter(Boolean);
+      pageCount = Math.max(1, Math.ceil(words.length / 350));
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: "Unsupported file type. Upload PDF or DOCX.",
+      });
+    }
 
     const cleanText = text
       .toLowerCase()
@@ -53,7 +91,7 @@ exports.parseResume = async (req, res) => {
       }`,
     });
 
-    let aiSkills = { hardSkills: [], softSkills: [] };
+    let aiSkills = extractJson(ollamaResponse.response);
     try {
       const jsonMatch = ollamaResponse.response.match(/```json([\s\S]*?)```/);
       if (jsonMatch) {
@@ -70,8 +108,7 @@ exports.parseResume = async (req, res) => {
 
     const analysis = {
       wordCount: cleanTokens.length,
-      hardSkills: foundHardSkills,
-      softSkills: foundSoftSkills,
+      pageCount,
       aiRaw: {
         hardSkills: aiSkills.hardSkills.join(", "),
         softSkills: aiSkills.softSkills.join(", "),
