@@ -1,14 +1,25 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 
-function UploadForm({ onResult }) {
+function UploadForm({ onResult, onNavigateToAnalyzing }) {
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
+  const navigate = useNavigate();
 
   const API_URL = import.meta.env.VITE_API_URL;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!file) return;
+
+    if (onNavigateToAnalyzing) {
+      if (typeof onNavigateToAnalyzing === "function") {
+        onNavigateToAnalyzing(file);
+      } else {
+        navigate("/analyzing", { state: { file } });
+      }
+      return;
+    }
 
     const formData = new FormData();
     formData.append("resume", file);
@@ -30,10 +41,10 @@ function UploadForm({ onResult }) {
         data = { error: "Invalid JSON response", raw: text };
       }
 
-      onResult(data);
+      onResult && onResult(data);
     } catch (err) {
       console.error("Upload failed:", err);
-      onResult({ error: "Upload failed: " + err });
+      onResult && onResult({ error: "Upload failed: " + err });
     } finally {
       setLoading(false);
     }

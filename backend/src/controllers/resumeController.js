@@ -4,6 +4,15 @@ const fs = require("fs");
 const natural = require("natural");
 const mammoth = require("mammoth");
 
+const experienceKeywords = [
+  "experience",
+  "work history",
+  "professional experience",
+];
+
+const dateRegex =
+  /\b(?:\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\d{4}|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{4})\b/gi;
+
 function extractJson(text) {
   try {
     const match = text.match(/```json([\s\S]*?)```/i);
@@ -23,6 +32,54 @@ function extractJson(text) {
   }
 }
 
+function extractEmails(text) {
+  const emailRegex = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
+  return text.match(emailRegex) || [];
+}
+
+function extractPhoneNumbers(text) {
+  const phoneRegex = /\+?\d[\d\s().-]{7,}\d/g;
+  return text.match(phoneRegex) || [];
+}
+
+function sectionExists(text, keywords, { maxHeaderLen = 80 } = {}) {
+  if (!text) return false;
+
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  return lines.some((line) => {
+    if (line.length > maxHeaderLen) return false; // headers are usually short
+    return keywords.some((keyword) =>
+      new RegExp(`\\b${keyword}\\b`, "i").test(line)
+    );
+  });
+}
+
+function classifyDate(dateStr) {
+  dateStr = dateStr.toLowerCase().trim();
+
+  if (/^\d{4}$/.test(dateStr)) return "YYYY"; // e.g. 2020
+  if (/^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}$/.test(dateStr)) return "DD/MM/YYYY"; // numeric
+  if (/^\d{1,2}[\/\-]\d{4}$/.test(dateStr)) return "MM/YYYY"; // short numeric
+  if (/^(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)/.test(dateStr))
+    return "Month YYYY"; // e.g. Jan 2020
+
+  return "Other";
+}
+
+function checkDateConsistency(text) {
+  const matches = text.match(dateRegex) || [];
+  const formats = [...new Set(matches.map(classifyDate))];
+
+  return {
+    formats,
+    isConsistent: formats.length <= 1,
+  };
+}
+
 exports.parseResume = async (req, res) => {
   try {
     if (!req.file) {
@@ -34,19 +91,15 @@ exports.parseResume = async (req, res) => {
     const filePath = req.file.path;
     const dataBuffer = fs.readFileSync(filePath);
     let text = "";
-    let pageCount = 1;
     if (req.file.mimetype === "application/pdf") {
       const pdfData = await pdfParse(dataBuffer);
       text = pdfData.text;
-      pageCount = pdfData.numpages || 1;
     } else if (
       req.file.mimetype ===
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     ) {
       const result = await mammoth.extractRawText({ path: filePath });
       text = result.value;
-      const words = text.split(/\s+/).filter(Boolean);
-      pageCount = Math.max(1, Math.ceil(words.length / 350));
     } else {
       return res.status(400).json({
         success: false,
@@ -77,27 +130,47 @@ exports.parseResume = async (req, res) => {
       return regex.test(normalizedText);
     });
 
+    // Calculate recruiter tips rating (this can be done early as it doesn't depend on AI analysis)
+    const recruiterTipsRating = Math.min(
+      8,
+      Math.max(
+        1,
+        (cleanTokens.length < 1000 ? 3 : 1) +
+          (foundHardSkills.length > 0 ? 2 : 0) +
+          (foundSoftSkills.length > 0 ? 2 : 0) +
+          (extractEmails(text).length > 0 ? 1 : 0)
+      )
+    );
+
     const ollamaResponse = await ollama.default.generate({
       model: "llama3.1",
-      prompt: `You are a resume analyzer. Extract skills clearly into JSON.
+      prompt: `You are a resume analyzer. 
+      Extract the following information clearly into JSON. DO NOT INCLUDE ANY OTHER TEXT:
+      - Address/Location
+      - Experience
+      - Hard & Soft skills (list them out seperated by commans. Do not include any other text. Gather soft skills from inference. If you think it is a hard skill, then it is a hard skill.)
 
       Here is a resume text:
       ${text}
 
       Return JSON in this format:
       {
+        "location": [...]
+        "experience": [...],
         "hardSkills": [...],
-        "softSkills": [...]
+        "softSkills": [...],
       }`,
     });
 
-    let aiSkills = extractJson(ollamaResponse.response);
+    console.log("Ollama Responded:", ollamaResponse.response);
+
+    let aiAnalysis = extractJson(ollamaResponse.response);
     try {
       const jsonMatch = ollamaResponse.response.match(/```json([\s\S]*?)```/);
       if (jsonMatch) {
-        aiSkills = JSON.parse(jsonMatch[1].trim());
+        aiAnalysis = JSON.parse(jsonMatch[1].trim());
       } else {
-        aiSkills = JSON.parse(ollamaResponse.response);
+        aiAnalysis = JSON.parse(ollamaResponse.response);
       }
     } catch (e) {
       console.warn(
@@ -105,13 +178,85 @@ exports.parseResume = async (req, res) => {
         ollamaResponse.response
       );
     }
+    // console.log(aiAnalysis);
+
+    const locationBoolean =
+      Array.isArray(aiAnalysis.location) && aiAnalysis.location.length > 0;
+
+    const extractedEmails = extractEmails(text);
+    const emailBoolean = extractedEmails.length > 0;
+    const extractedPhone = extractPhoneNumbers(text);
+    const phoneBoolean = extractedPhone.length > 0;
+
+    const hasEducationSection = sectionExists(text, ["education"]);
+    const hasExperienceSection = sectionExists(text, experienceKeywords);
+
+    const hasExperience =
+      Array.isArray(aiAnalysis.experience) && aiAnalysis.experience.length > 0;
+
+    // Calculate hard and soft skills ratings after AI analysis is complete
+    const hardSkillsCount =
+      foundHardSkills.length +
+      (aiAnalysis.hardSkills ? aiAnalysis.hardSkills.length : 0);
+    const softSkillsCount =
+      foundSoftSkills.length +
+      (aiAnalysis.softSkills ? aiAnalysis.softSkills.length : 0);
+
+    const hardSkillsRating = Math.min(8, Math.max(0, hardSkillsCount));
+    const softSkillsRating = Math.min(8, Math.max(0, softSkillsCount));
+
+    const dateFormats = checkDateConsistency(text);
+    const dateFormatted = dateFormats.isConsistent;
+    const educationMatchBoolean = false;
+
+    const factors = [
+      locationBoolean,
+      emailBoolean,
+      phoneBoolean,
+      hasEducationSection,
+      hasExperienceSection,
+      hasExperience,
+      dateFormatted,
+      educationMatchBoolean,
+    ];
+
+    const searchabilityRating = factors.reduce(
+      (score, val) => score + Number(val),
+      0
+    );
 
     const analysis = {
-      wordCount: cleanTokens.length,
-      pageCount,
-      aiRaw: {
-        hardSkills: aiSkills.hardSkills.join(", "),
-        softSkills: aiSkills.softSkills.join(", "),
+      searchability: {
+        rating: searchabilityRating,
+        contactInformation: {
+          location: locationBoolean,
+          email: emailBoolean,
+          phoneNumber: phoneBoolean,
+        },
+        sections: {
+          hasSection: {
+            education: hasEducationSection,
+            experience: hasExperienceSection,
+          },
+          experience: hasExperience,
+        },
+        dateFormatting: dateFormatted,
+        educationMatch: false,
+      },
+      hardSkills: {
+        rating: hardSkillsRating,
+        skills: aiAnalysis.hardSkills,
+      },
+      softSkills: {
+        rating: softSkillsRating,
+        skills: aiAnalysis.softSkills,
+      },
+      recruiterTips: {
+        rating: recruiterTipsRating,
+        wordCount: {
+          count: cleanTokens.length,
+          result: cleanTokens.length < 1000,
+        },
       },
     };
 
