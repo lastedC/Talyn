@@ -42,6 +42,12 @@ function extractPhoneNumbers(text) {
   return text.match(phoneRegex) || [];
 }
 
+function extractWebsite(text) {
+  const websiteRegex =
+    /(https?:\/\/)?(www\.)?[a-zA-Z0-9-]+\.[a-zA-Z]{2,}(?:\/[^\s]*)?/gi;
+  return text.match(websiteRegex) || [];
+}
+
 function sectionExists(text, keywords, { maxHeaderLen = 80 } = {}) {
   if (!text) return false;
 
@@ -130,25 +136,19 @@ exports.parseResume = async (req, res) => {
       return regex.test(normalizedText);
     });
 
-    // Calculate recruiter tips rating (this can be done early as it doesn't depend on AI analysis)
-    const recruiterTipsRating = Math.min(
-      8,
-      Math.max(
-        1,
-        (cleanTokens.length < 1000 ? 3 : 1) +
-          (foundHardSkills.length > 0 ? 2 : 0) +
-          (foundSoftSkills.length > 0 ? 2 : 0) +
-          (extractEmails(text).length > 0 ? 1 : 0)
-      )
-    );
-
     const ollamaResponse = await ollama.default.generate({
       model: "llama3.1",
       prompt: `You are a resume analyzer. 
       Extract the following information clearly into JSON. DO NOT INCLUDE ANY OTHER TEXT:
       - Address/Location
       - Experience
-      - Hard & Soft skills (list them out seperated by commans. Do not include any other text. Gather soft skills from inference. If you think it is a hard skill, then it is a hard skill.)
+      - Hard & Soft skills 
+
+      Rules:
+      - List skills seperated by commas.
+      - Do not include any other text.
+      - Gather soft skills from inference. If you think it is a hard skill, then it is a hard skill.
+      - Only list the soft skill names with no other text.
 
       Here is a resume text:
       ${text}
@@ -208,8 +208,9 @@ exports.parseResume = async (req, res) => {
     const dateFormats = checkDateConsistency(text);
     const dateFormatted = dateFormats.isConsistent;
     const educationMatchBoolean = false;
+    const hasWebsite = extractWebsite(text).length > 0;
 
-    const factors = [
+    const searchabilityFactors = [
       locationBoolean,
       emailBoolean,
       phoneBoolean,
@@ -220,7 +221,17 @@ exports.parseResume = async (req, res) => {
       educationMatchBoolean,
     ];
 
-    const searchabilityRating = factors.reduce(
+    const searchabilityRating = searchabilityFactors.reduce(
+      (score, val) => score + Number(val),
+      0
+    );
+
+    const wordCount = cleanTokens.length;
+    const wordCountBoolean = wordCount < 1000;
+
+    const recruiterTipsFactors = [hasWebsite, wordCountBoolean];
+
+    const recruiterTipsRating = recruiterTipsFactors.reduce(
       (score, val) => score + Number(val),
       0
     );
@@ -228,6 +239,7 @@ exports.parseResume = async (req, res) => {
     const analysis = {
       searchability: {
         rating: searchabilityRating,
+        maxRating: 8,
         contactInformation: {
           location: locationBoolean,
           email: emailBoolean,
@@ -245,18 +257,22 @@ exports.parseResume = async (req, res) => {
       },
       hardSkills: {
         rating: hardSkillsRating,
+        maxRating: 8,
         skills: aiAnalysis.hardSkills,
       },
       softSkills: {
         rating: softSkillsRating,
+        maxRating: 8,
         skills: aiAnalysis.softSkills,
       },
       recruiterTips: {
         rating: recruiterTipsRating,
+        maxRating: 2,
         wordCount: {
-          count: cleanTokens.length,
-          result: cleanTokens.length < 1000,
+          count: wordCount,
+          result: wordCountBoolean,
         },
+        website: hasWebsite,
       },
     };
 
